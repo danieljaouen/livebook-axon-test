@@ -1,0 +1,186 @@
+# Predicting Stock Prices with Elixir & Axon
+
+```elixir
+Mix.install(
+  [
+    {:nx, "~> 0.3.0", github: "elixir-nx/nx", sparse: "nx", override: true},
+    {:axon, "~> 0.2.0", github: "elixir-nx/axon"},
+    {:vega_lite, "~> 0.1.6"},
+    {:explorer, "~> 0.3.1"},
+    {:kino, "~> 0.6.2"},
+    {:kino_vega_lite, "~> 0.1.4"},
+    {:scholar, "~> 0.1.0", github: "elixir-nx/scholar"},
+    {:jason, "~> 1.4.0"},
+    {:httpoison, "~> 1.8"},
+    {:exla, "~> 0.3.0", github: "elixir-nx/nx", sparse: "exla", override: true}
+  ],
+  config: [
+    nx: [default_backend: EXLA.Backend],
+    exla: [
+      clients: [
+        cuda: [platform: :cuda],
+        rocm: [platform: :rocm],
+        tpu: [platform: :tpu],
+        host: [platform: :host]
+      ]
+    ]
+  ]
+)
+```
+
+## Explanation
+
+The following LiveBook follows along with [this YouTube video](https://www.youtube.com/watch?v=PuZY9q-aKLw).  The only differences are:
+
+1. I am looking at all the data rather than just from 1/1/2012 to 1/1/2020, and
+2. I don't use the equivalent of `sklearn`'s `MinMaxScaler` 
+   (which can be found in `Scholar`'s `Preprocessing` module, which I have installed from GitHub in this LiveBook in case you want to try it out for yourself)
+
+## Get the Alpha Vantage API Key
+
+```elixir
+alpha_vantage_api_key_text = Kino.Input.text("Alpha Vantage API Key")
+```
+
+## Get the Data
+
+```elixir
+company = "META"
+start = ~D[2012-01-01]
+end_ = ~D[2020-01-01]
+
+url =
+  "https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=#{company}&outputsize=full&apikey=#{Kino.Input.read(alpha_vantage_api_key_text)}"
+
+%HTTPoison.Response{status_code: 200, body: response_body} = HTTPoison.get!(url)
+```
+
+```elixir
+json = Jason.decode!(response_body)["Time Series (Daily)"]
+meta_prices = for tuple <- json, do: [elem(tuple, 0), elem(tuple, 1)["4. close"]]
+meta_prices = Enum.sort_by(meta_prices, fn [date, _] -> date end)
+meta_prices = Enum.map(meta_prices, fn [date, price] -> [date, String.to_float(price)] end)
+```
+
+## Shape the Data
+
+```elixir
+prediction_days_text = Kino.Input.text("Num Prediction Days")
+```
+
+```elixir
+prediction_days = String.to_integer(Kino.Input.read(prediction_days_text))
+x = []
+y = []
+
+x =
+  for i <- prediction_days..(length(meta_prices) - 1) do
+    [
+      meta_prices |> Enum.at(i) |> Enum.at(0),
+      Enum.map(
+        Enum.slice(meta_prices, (i - prediction_days)..(i - 1)),
+        fn lst -> Enum.at(lst, 1) end
+      )
+    ]
+  end
+
+y =
+  for i <- prediction_days..(length(meta_prices) - 1) do
+    Enum.at(meta_prices, i)
+  end
+
+dates = Enum.map(y, fn [date, _price] -> date end)
+```
+
+## Set Up the Tensors
+
+```elixir
+mapped_x = Enum.map(x, fn [_date, prices] -> prices end)
+mapped_y = Enum.map(y, fn [_date, price] -> price end)
+
+x_tensor = Nx.tensor(mapped_x)
+y_tensor = Nx.tensor(mapped_y)
+
+price_min = Explorer.Series.min(Explorer.Series.from_tensor(y_tensor))
+price_max = Explorer.Series.max(Explorer.Series.from_tensor(y_tensor))
+
+x_tensor = Scholar.Preprocessing.min_max_scale(x_tensor)
+y_tensor = Scholar.Preprocessing.min_max_scale(y_tensor)
+
+shape_1 = elem(Nx.shape(x_tensor), 0)
+shape_2 = elem(Nx.shape(x_tensor), 1)
+shape_3 = 1
+
+shape = {shape_1, shape_2, shape_3}
+
+x_tensor = Nx.reshape(x_tensor, shape)
+```
+
+## Train/Test Split
+
+```elixir
+test_num_text = Kino.Input.text("Number of Test Cases")
+```
+
+```elixir
+test_num = String.to_integer(Kino.Input.read(test_num_text))
+[x_train, x_test] = [x_tensor[0..-test_num//1], x_tensor[-test_num..-1]]
+[y_train, y_test] = [y_tensor[0..-test_num//1], y_tensor[-test_num..-1]]
+```
+
+## Create the Model
+
+```elixir
+input = Axon.input("input", shape: {prediction_days, 1})
+
+model =
+  input
+  |> Axon.lstm(50)
+  |> then(fn {seq, _} -> seq end)
+  |> Axon.dropout(rate: 0.2)
+  |> Axon.lstm(50)
+  |> then(fn {seq, _} -> seq end)
+  |> Axon.dropout(rate: 0.2)
+  |> Axon.lstm(50)
+  |> then(fn {seq, _} -> seq end)
+  |> Axon.dropout(rate: 0.2)
+  |> Axon.dense(1, activation: :sigmoid)
+```
+
+## Batch the Data
+
+```elixir
+batched_x_train =
+  x_train
+  |> Nx.to_batched(32)
+
+batched_y_train =
+  y_train
+  |> Nx.to_batched(32)
+```
+
+## Train the Model and Run It
+
+```elixir
+params =
+  model
+  |> Axon.Loop.trainer(:mean_squared_error, :adam)
+  |> Axon.Loop.metric(:mean_absolute_error, "MAE")
+  |> Axon.Loop.run(Stream.zip(batched_x_train, batched_y_train), %{}, epochs: 25, compiler: EXLA)
+```
+
+## Predict the Test Set
+
+```elixir
+y_pred = Axon.predict(model, params, x_test)
+```
+
+## Unscale the Predictions & Values
+
+```elixir
+price_min_series = Nx.tensor(for _i <- 0..(prediction_days - 1), do: price_min)
+scale = price_max - price_min
+# y_pred = Nx.add(price_min_series, Nx.multiply(scale, y_pred))
+# Nx.shape(y_pred) == Nx.shape(x_test)
+Axon.Display.as_table(model, x_test) |> IO.puts()
+```
