@@ -32,9 +32,7 @@ Mix.install(
 
 The following LiveBook follows along with [this YouTube video](https://www.youtube.com/watch?v=PuZY9q-aKLw).  The only differences are:
 
-1. I am looking at all the data rather than just from 1/1/2012 to 1/1/2020, and
-2. I don't use the equivalent of `sklearn`'s `MinMaxScaler` 
-   (which can be found in `Scholar`'s `Preprocessing` module, which I have installed from GitHub in this LiveBook in case you want to try it out for yourself)
+* I am looking at all the data rather than just from 1/1/2012 to 1/1/2020, and
 
 ## Get the Alpha Vantage API Key
 
