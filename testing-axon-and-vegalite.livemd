@@ -134,17 +134,27 @@ input = Axon.input("input", shape: {nil, prediction_days, 1})
 
 model =
   input
-  |> Axon.lstm(50)
+  |> Axon.lstm(50, activation: :sigmoid)
   |> then(fn {seq, _} -> seq end)
   |> Axon.dropout(rate: 0.2)
-  |> Axon.lstm(50)
+  |> Axon.lstm(50, activation: :sigmoid)
   |> then(fn {seq, _} -> seq end)
   |> Axon.dropout(rate: 0.2)
-  |> Axon.lstm(50)
+  |> Axon.lstm(50, activation: :sigmoid)
   |> then(fn {seq, _} -> seq end)
   |> Axon.dropout(rate: 0.2)
-  |> Axon.nx(fn x -> Nx.squeeze(x[[.., -1, ..]], axes: [1]) end)
+  |> Axon.nx(fn x ->
+    Nx.gather(
+      x,
+      Nx.tensor(
+        for i <- 0..(elem(Nx.shape(x), 0) - 1) do
+          [[i, -1, 0]]
+        end
+      )
+    )
+  end)
   |> Axon.dense(1, activation: :sigmoid)
+  |> Axon.nx(fn x -> Nx.squeeze(x) end)
 ```
 
 ## Batch the Data
@@ -178,9 +188,29 @@ y_pred = Axon.predict(model, params, x_test)
 ## Unscale the Predictions & Values
 
 ```elixir
-price_min_series = Nx.tensor(for _i <- 0..(prediction_days - 1), do: price_min)
 scale = price_max - price_min
-# y_pred = Nx.add(price_min_series, Nx.multiply(scale, y_pred))
-# Nx.shape(y_pred) == Nx.shape(x_test)
-Axon.Display.as_table(model, x_test) |> IO.puts()
+y_pred_unscaled = Nx.add(price_min, Nx.multiply(scale, y_pred))
+y_test_unscaled = Nx.add(price_min, Nx.multiply(scale, y_test))
+
+data =
+  Explorer.DataFrame.new(
+    dates: Enum.take(dates, -test_num),
+    y_pred: Nx.to_flat_list(y_pred_unscaled),
+    y_test: Nx.to_flat_list(y_test_unscaled)
+  )
+```
+
+```elixir
+VegaLite.new(width: 400, height: 400, title: "y_pred vs. y_test")
+|> VegaLite.data_from_values(data, only: ["dates", "y_test", "y_pred"])
+|> VegaLite.layers([
+  VegaLite.new()
+  |> VegaLite.mark(:line, color: "red")
+  |> VegaLite.encode_field(:x, "dates", type: :temporal)
+  |> VegaLite.encode_field(:y, "y_test", type: :quantitative),
+  VegaLite.new()
+  |> VegaLite.mark(:line)
+  |> VegaLite.encode_field(:x, "dates", type: :temporal)
+  |> VegaLite.encode_field(:y, "y_pred", type: :quantitative)
+])
 ```
