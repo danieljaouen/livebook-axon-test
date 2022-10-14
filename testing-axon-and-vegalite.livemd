@@ -7,12 +7,13 @@ Mix.install(
     {:axon, "~> 0.2.0", github: "elixir-nx/axon"},
     {:vega_lite, "~> 0.1.6"},
     {:explorer, "~> 0.3.1"},
-    {:kino, "~> 0.6.2"},
+    {:kino, "~> 0.7.0"},
     {:kino_vega_lite, "~> 0.1.4"},
     {:scholar, "~> 0.1.0", github: "elixir-nx/scholar"},
     {:jason, "~> 1.4.0"},
     {:httpoison, "~> 1.8"},
-    {:exla, "~> 0.3.0", github: "elixir-nx/nx", sparse: "exla", override: true}
+    {:exla, "~> 0.3.0", github: "elixir-nx/nx", sparse: "exla", override: true},
+    {:scidata, "~> 0.1.9"}
   ],
   config: [
     nx: [default_backend: EXLA.Backend],
@@ -129,7 +130,7 @@ test_num = String.to_integer(Kino.Input.read(test_num_text))
 ## Create the Model
 
 ```elixir
-input = Axon.input("input", shape: {prediction_days, 1})
+input = Axon.input("input", shape: {nil, prediction_days, 1})
 
 model =
   input
@@ -142,6 +143,7 @@ model =
   |> Axon.lstm(50)
   |> then(fn {seq, _} -> seq end)
   |> Axon.dropout(rate: 0.2)
+  |> Axon.nx(fn x -> Nx.squeeze(x[[.., -1, ..]], axes: [1]) end)
   |> Axon.dense(1, activation: :sigmoid)
 ```
 
@@ -150,11 +152,11 @@ model =
 ```elixir
 batched_x_train =
   x_train
-  |> Nx.to_batched(32)
+  |> Nx.to_batched(32, leftover: :discard)
 
 batched_y_train =
   y_train
-  |> Nx.to_batched(32)
+  |> Nx.to_batched(32, leftover: :discard)
 ```
 
 ## Train the Model and Run It
