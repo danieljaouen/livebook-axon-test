@@ -76,10 +76,9 @@ x =
   for i <- prediction_days..(length(meta_prices) - 1) do
     [
       meta_prices |> Enum.at(i) |> Enum.at(0),
-      Enum.map(
-        Enum.slice(meta_prices, (i - prediction_days)..(i - 1)),
-        fn lst -> Enum.at(lst, 1) end
-      )
+      meta_prices
+      |> Enum.map(fn lst -> Enum.at(lst, 1) end)
+      |> Enum.slice((i - prediction_days)..(i - 1))
     ]
   end
 
